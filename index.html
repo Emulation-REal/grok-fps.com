@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BloodFury FPS: Carnage Edition</title>
+    <title>BloodFury FPS: Apocalypse Edition</title>
     <style>
         body { margin: 0; overflow: hidden; }
         canvas { display: block; }
@@ -53,17 +53,28 @@
             text-shadow: 2px 2px 2px black;
             display: none;
         }
+        #leaderboard {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            text-shadow: 2px 2px 2px black;
+        }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
     <div id="ui"></div>
     <div id="gameOver">Game Over</div>
+    <div id="leaderboard"></div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
     <script>
         // Initialize Three.js scene
         const scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(0x666666, 10, 100);
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer();
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -76,38 +87,53 @@
         // Lighting
         const ambientLight = new THREE.AmbientLight(0x404040);
         scene.add(ambientLight);
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        directionalLight.position.set(10, 20, 10);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
+        directionalLight.position.set(20, 30, 20);
         scene.add(directionalLight);
 
         // Player setup
         const playerBody = new CANNON.Body({ mass: 1 });
         playerBody.addShape(new CANNON.Sphere(0.5));
-        playerBody.position.set(0, 1, 10);
+        playerBody.position.set(0, 1, 50);
         world.addBody(playerBody);
         camera.position.copy(playerBody.position);
         let playerHealth = 100;
+        let stamina = 100;
+        let score = 0;
+        let multiKill = 0;
+        let wave = 1;
 
         // Gun model
+        let currentWeapon = 0;
+        const weapons = [
+            { name: 'Pistol', fireRate: 500, damage: 20, spread: 0.02, ammo: 50, maxAmmo: 50, reloadTime: 1000, color: 0x333333 },
+            { name: 'Shotgun', fireRate: 1000, damage: 50, spread: 0.1, ammo: 20, maxAmmo: 20, reloadTime: 2000, pellets: 5, color: 0x555555 },
+            { name: 'Assault Rifle', fireRate: 100, damage: 10, spread: 0.05, ammo: 100, maxAmmo: 100, reloadTime: 1500, color: 0x444444 },
+            { name: 'Sniper Rifle', fireRate: 1500, damage: 100, spread: 0.001, ammo: 10, maxAmmo: 10, reloadTime: 2500, headshotMult: 2, color: 0x666666 },
+            { name: 'Rocket Launcher', fireRate: 2000, damage: 150, spread: 0.05, ammo: 5, maxAmmo: 5, reloadTime: 3000, explosionRadius: 3, color: 0x777777 },
+            { name: 'Chainsaw', fireRate: 100, damage: 30, spread: 0, ammo: Infinity, maxAmmo: Infinity, reloadTime: 0, range: 1.5, color: 0x8b0000 }
+        ];
         const gunGeometry = new THREE.BoxGeometry(0.2, 0.1, 0.5);
-        const gunMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
-        const gun = new THREE.Mesh(gunGeometry, gunMaterial);
+        const gun = new THREE.Mesh(gunGeometry, new THREE.MeshStandardMaterial({ color: weapons[0].color }));
         gun.position.set(0.2, -0.2, -0.5);
         camera.add(gun);
         scene.add(camera);
 
+        // Muzzle flash
+        const muzzleFlashGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+        const muzzleFlashMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        const muzzleFlash = new THREE.Mesh(muzzleFlashGeometry, muzzleFlashMaterial);
+        muzzleFlash.position.set(0.2, -0.2, -0.7);
+        muzzleFlash.visible = false;
+        camera.add(muzzleFlash);
+
         // Camera controls
         let yaw = 0, pitch = 0;
-        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, sprint = false;
         const velocity = new THREE.Vector3();
         const direction = new THREE.Vector3();
-        let currentWeapon = 0;
-        const weapons = [
-            { name: 'Pistol', fireRate: 500, damage: 20, spread: 0.02, ammo: 50 },
-            { name: 'Shotgun', fireRate: 1000, damage: 50, spread: 0.1, ammo: 20, pellets: 5 },
-            { name: 'Assault Rifle', fireRate: 100, damage: 10, spread: 0.05, ammo: 100 }
-        ];
         let canShoot = true;
+        let isReloading = false;
 
         // Lock pointer
         document.addEventListener('click', () => {
@@ -131,9 +157,14 @@
                 case 'KeyS': moveBackward = true; break;
                 case 'KeyA': moveLeft = true; break;
                 case 'KeyD': moveRight = true; break;
-                case 'Digit1': currentWeapon = 0; break;
-                case 'Digit2': currentWeapon = 1; break;
-                case 'Digit3': currentWeapon = 2; break;
+                case 'ShiftLeft': sprint = true; break;
+                case 'KeyR': if (!isReloading) reload(); break;
+                case 'Digit1': switchWeapon(0); break;
+                case 'Digit2': switchWeapon(1); break;
+                case 'Digit3': switchWeapon(2); break;
+                case 'Digit4': switchWeapon(3); break;
+                case 'Digit5': switchWeapon(4); break;
+                case 'Digit6': switchWeapon(5); break;
             }
         });
 
@@ -142,19 +173,44 @@
                 case 'KeyW': moveForward = false; break;
                 case 'KeyS': moveBackward = false; break;
                 case 'KeyA': moveLeft = false; break;
-                case 'KeyD': moveRight = false; break; // Fixed bug
+                case 'KeyD': moveRight = false; break;
+                case 'ShiftLeft': sprint = false; break;
             }
         });
 
         // Shooting
         document.addEventListener('mousedown', () => {
-            if (canShoot && document.pointerLockElement === renderer.domElement && weapons[currentWeapon].ammo > 0 && playerHealth > 0) {
+            if (canShoot && document.pointerLockElement === renderer.domElement && weapons[currentWeapon].ammo > 0 && playerHealth > 0 && !isReloading) {
                 shoot();
             }
         });
 
-        // Ground
-        const groundGeometry = new THREE.PlaneGeometry(100, 100);
+        function switchWeapon(index) {
+            if (index !== currentWeapon && !isReloading) {
+                currentWeapon = index;
+                gun.material.color.setHex(weapons[currentWeapon].color);
+            }
+        }
+
+        function reload() {
+            if (weapons[currentWeapon].ammo < weapons[currentWeapon].maxAmmo && !isReloading) {
+                isReloading = true;
+                playSound('reload');
+                setTimeout(() => {
+                    weapons[currentWeapon].ammo = weapons[currentWeapon].maxAmmo;
+                    isReloading = false;
+                }, weapons[currentWeapon].reloadTime);
+            }
+        }
+
+        // Ground with terrain
+        const groundGeometry = new THREE.PlaneGeometry(200, 200, 50, 50);
+        for (let i = 0; i < groundGeometry.attributes.position.array.length; i += 3) {
+            const x = groundGeometry.attributes.position.array[i];
+            const z = groundGeometry.attributes.position.array[i + 2];
+            groundGeometry.attributes.position.array[i + 1] = Math.sin(x * 0.05) * Math.cos(z * 0.05) * 2;
+        }
+        groundGeometry.computeVertexNormals();
         const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
         const ground = new THREE.Mesh(groundGeometry, groundMaterial);
         ground.rotation.x = -Math.PI / 2;
@@ -165,13 +221,13 @@
         groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
         world.addBody(groundBody);
 
-        // Environment (walls and crates)
+        // Environment
         const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
         const walls = [
-            { pos: [0, 2, -50], size: [100, 4, 1] },
-            { pos: [0, 2, 50], size: [100, 4, 1] },
-            { pos: [-50, 2, 0], size: [1, 4, 100] },
-            { pos: [50, 2, 0], size: [1, 4, 100] }
+            { pos: [0, 2, -100], size: [200, 4, 1] },
+            { pos: [0, 2, 100], size: [200, 4, 1] },
+            { pos: [-100, 2, 0], size: [1, 4, 200] },
+            { pos: [100, 2, 0], size: [1, 4, 200] }
         ];
         walls.forEach(w => {
             const wallGeometry = new THREE.BoxGeometry(...w.size);
@@ -185,20 +241,37 @@
         });
 
         const crateMaterial = new THREE.MeshStandardMaterial({ color: 0x8b4513 });
-        for (let i = 0; i < 10; i++) {
+        const crates = [];
+        const crateBodies = [];
+        for (let i = 0; i < 20; i++) {
             const crateGeometry = new THREE.BoxGeometry(2, 2, 2);
             const crate = new THREE.Mesh(crateGeometry, crateMaterial);
-            crate.position.set(Math.random() * 40 - 20, 1, Math.random() * 40 - 20);
+            crate.position.set(Math.random() * 160 - 80, 1, Math.random() * 160 - 80);
+            crate.userData = { health: 50 };
             scene.add(crate);
-            const crateBody = new CANNON.Body({ mass: 0 });
+            crates.push(crate);
+            const crateBody = new CANNON.Body({ mass: 10 });
             crateBody.addShape(new CANNON.Box(new CANNON.Vec3(1, 1, 1)));
             crateBody.position.copy(crate.position);
             world.addBody(crateBody);
+            crateBodies.push(crateBody);
+        }
+
+        const barrelMaterial = new THREE.MeshStandardMaterial({ color: 0x666666 });
+        for (let i = 0; i < 10; i++) {
+            const barrelGeometry = new THREE.CylinderGeometry(0.5, 0.5, 2, 16);
+            const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial);
+            barrel.position.set(Math.random() * 160 - 80, 1, Math.random() * 160 - 80);
+            scene.add(barrel);
+            const barrelBody = new CANNON.Body({ mass: 0 });
+            barrelBody.addShape(new CANNON.Cylinder(0.5, 0.5, 2, 16));
+            barrelBody.position.copy(barrel.position);
+            world.addBody(barrelBody);
         }
 
         // Skybox
-        const skyGeometry = new THREE.SphereGeometry(100, 32, 32);
-        const skyMaterial = new THREE.MeshBasicMaterial({ color: 0x87ceeb, side: THREE.BackSide });
+        const skyGeometry = new THREE.SphereGeometry(200, 32, 32);
+        const skyMaterial = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.BackSide });
         const sky = new THREE.Mesh(skyGeometry, skyMaterial);
         scene.add(sky);
 
@@ -207,63 +280,72 @@
         const enemyBodies = [];
         let killCount = 0;
         function spawnEnemy(type = 'fast') {
-            const size = type === 'fast' ? 0.5 : 1;
-            const health = type === 'fast' ? 50 : 200;
-            const speed = type === 'fast' ? 3 : 1;
-            const color = type === 'fast' ? 0xff4500 : 0x8b0000;
-            const enemyGeometry = new THREE.BoxGeometry(size, size, size);
+            const size = type === 'fast' ? 0.5 : type === 'tank' ? 1 : 0.7;
+            const health = type === 'fast' ? 50 : type === 'tank' ? 200 : 80;
+            const speed = type === 'fast' ? 4 : type === 'tank' ? 1 : 2;
+            const color = type === 'fast' ? 0xff4500 : type === 'tank' ? 0x8b0000 : 0x00ff00;
+            const enemyGeometry = new THREE.BoxGeometry(size, size * 1.5, size);
             const enemyMaterial = new THREE.MeshStandardMaterial({ color });
             const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
-            const x = Math.random() * 40 - 20;
-            const z = Math.random() * 40 - 20;
-            enemy.position.set(x, size / 2, z);
-            enemy.userData = { health, type, speed };
+            const x = Math.random() * 160 - 80;
+            const z = Math.random() * 160 - 80;
+            enemy.position.set(x, size * 0.75, z);
+            enemy.userData = { health, type, speed, lastShot: 0 };
             scene.add(enemy);
             enemies.push(enemy);
 
             const enemyBody = new CANNON.Body({ mass: 1 });
-            enemyBody.addShape(new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2)));
+            enemyBody.addShape(new CANNON.Box(new CANNON.Vec3(size / 2, size * 0.75, size / 2)));
             enemyBody.position.copy(enemy.position);
             world.addBody(enemyBody);
             enemyBodies.push(enemyBody);
         }
 
-        for (let i = 0; i < 20; i++) {
-            spawnEnemy(i < 15 ? 'fast' : 'tank');
+        for (let i = 0; i < 30; i++) {
+            spawnEnemy(i < 15 ? 'fast' : i < 25 ? 'tank' : 'ranged');
         }
 
-        // Blood particles and decals
+        // Blood effects
         const bloodParticles = [];
         const bloodGeometry = new THREE.BufferGeometry();
-        const bloodVertices = new Float32Array(30000);
+        const bloodVertices = new Float32Array(60000);
         bloodGeometry.setAttribute('position', new THREE.BufferAttribute(bloodVertices, 3));
         const bloodMaterial = new THREE.PointsMaterial({ color: 0xff0000, size: 0.1 });
         const bloodSystem = new THREE.Points(bloodGeometry, bloodMaterial);
         scene.add(bloodSystem);
 
         const decals = [];
-        const decalGeometry = new THREE.PlaneGeometry(1, 1);
-        const decalMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 });
+        const bloodPoolGeometry = new THREE.CircleGeometry(2, 16);
+        const bloodPoolMaterial = new THREE.MeshBasicMaterial({ color: 0x8b0000, transparent: true, opacity: 0.7 });
         function spawnBlood(position, isDismember = false) {
-            const particleCount = isDismember ? 300 : 150;
+            const particleCount = isDismember ? 500 : 200;
             for (let i = 0; i < particleCount; i++) {
                 const particle = {
                     position: new THREE.Vector3(position.x, position.y, position.z),
                     velocity: new THREE.Vector3(
-                        (Math.random() - 0.5) * (isDismember ? 4 : 2),
-                        Math.random() * (isDismember ? 4 : 2),
-                        (Math.random() - 0.5) * (isDismember ? 4 : 2)
+                        (Math.random() - 0.5) * (isDismember ? 5 : 3),
+                        Math.random() * (isDismember ? 5 : 3),
+                        (Math.random() - 0.5) * (isDismember ? 5 : 3)
                     ),
-                    lifetime: isDismember ? 3 : 2
+                    lifetime: isDismember ? 4 : 2
                 };
                 bloodParticles.push(particle);
             }
-            // Add decal
+            // Blood decal
             const decal = new THREE.Mesh(decalGeometry, decalMaterial);
             decal.position.set(position.x, 0.01, position.z);
             decal.rotation.x = -Math.PI / 2;
+            decal.scale.set(Math.random() * 0.5 + 0.5, Math.random() * 0.5 + 0.5, 1);
             scene.add(decal);
-            decals.push({ mesh: decal, lifetime: 10 });
+            decals.push({ mesh: decal, lifetime: 15 });
+            // Blood pool
+            if (isDismember) {
+                const pool = new THREE.Mesh(bloodPoolGeometry, bloodPoolMaterial);
+                pool.position.set(position.x, 0.02, position.z);
+                pool.rotation.x = -Math.PI / 2;
+                scene.add(pool);
+                decals.push({ mesh: pool, lifetime: 30 });
+            }
         }
 
         function updateBlood() {
@@ -295,24 +377,58 @@
 
         // Dismemberment
         function dismemberEnemy(enemy) {
-            const size = enemy.userData.type === 'fast' ? 0.25 : 0.5;
-            for (let i = 0; i < 3; i++) {
-                const partGeometry = new THREE.BoxGeometry(size / 2, size / 2, size / 2);
-                const partMaterial = new THREE.MeshStandardMaterial({ color: 0x8b0000 });
+            const size = enemy.userData.type === 'fast' ? 0.2 : enemy.userData.type === 'tank' ? 0.4 : 0.3;
+            for (let i = 0; i < 5; i++) {
+                const partGeometry = new THREE.BoxGeometry(size, size, size);
+                const partMaterial = new THREE.MeshStandardMaterial({ 
+                    color: 0x8b0000,
+                    emissive: 0x400000,
+                    roughness: 0.8
+                });
                 const part = new THREE.Mesh(partGeometry, partMaterial);
                 part.position.copy(enemy.position);
+                part.position.y += Math.random() * size;
                 scene.add(part);
                 const partBody = new CANNON.Body({ mass: 0.1 });
-                partBody.addShape(new CANNON.Box(new CANNON.Vec3(size / 4, size / 4, size / 4)));
+                partBody.addShape(new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2)));
                 partBody.position.copy(part.position);
-                partBody.velocity.set((Math.random() - 0.5) * 5, Math.random() * 5, (Math.random() - 0.5) * 5);
+                partBody.velocity.set((Math.random() - 0.5) * 6, Math.random() * 6, (Math.random() - 0.5) * 6);
                 world.addBody(partBody);
                 setTimeout(() => {
                     scene.remove(part);
                     world.removeBody(partBody);
-                }, 2000);
+                }, 3000);
             }
             spawnBlood(enemy.position, true);
+        }
+
+        // Enemy projectiles
+        const projectiles = [];
+        const projectileGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+        const projectileMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+        function spawnProjectile(enemy) {
+            const projectile = new THREE.Mesh(projectileGeometry, projectileMaterial);
+            projectile.position.copy(enemy.position);
+            projectile.position.y += 0.5;
+            scene.add(projectile);
+            const direction = playerBody.position.vsub(projectile.position).unit();
+            projectiles.push({ mesh: projectile, velocity: direction.scale(5), lifetime: 5 });
+        }
+
+        function updateProjectiles() {
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const proj = projectiles[i];
+                proj.mesh.position.add(proj.velocity.clone().multiplyScalar(1 / 60));
+                proj.lifetime -= 1 / 60;
+                if (proj.lifetime <= 0 || proj.mesh.position.distanceTo(playerBody.position) < 0.7) {
+                    if (proj.lifetime > 0) {
+                        playerHealth -= 20;
+                        spawnBlood(playerBody.position);
+                    }
+                    scene.remove(proj.mesh);
+                    projectiles.splice(i, 1);
+                }
+            }
         }
 
         // Sound effects
@@ -332,43 +448,138 @@
                 oscillator.frequency.setValueAtTime(100, audioCtx.currentTime);
                 gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            } else if (type === 'reload') {
+                oscillator.type = 'triangle';
+                oscillator.frequency.setValueAtTime(300, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+            } else if (type === 'ambient') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(50, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
             }
             oscillator.start();
-            oscillator.stop(audioCtx.currentTime + (type === 'gun' ? 0.1 : 0.5));
+            oscillator.stop(audioCtx.currentTime + (type === 'ambient' ? 10 : type === 'gun' ? 0.1 : type === 'reload' ? 0.3 : 0.5));
         }
+        setInterval(() => playSound('ambient'), 10000);
 
         function shoot() {
-            if (weapons[currentWeapon].ammo <= 0) return;
-            canShoot = false;
-            weapons[currentWeapon].ammo--;
-            playSound('gun');
-            setTimeout(() => { canShoot = true; }, weapons[currentWeapon].fireRate);
-            const raycaster = new THREE.Raycaster();
             const weapon = weapons[currentWeapon];
+            if (weapon.ammo <= 0 || isReloading) return;
+            canShoot = false;
+            weapon.ammo--;
+            playSound('gun');
+            muzzleFlash.visible = true;
+            setTimeout(() => { muzzleFlash.visible = false; }, 50);
+            setTimeout(() => { canShoot = true; }, weapon.fireRate);
+            const raycaster = new THREE.Raycaster();
             const shots = weapon.pellets || 1;
+            let hits = 0;
             for (let i = 0; i < shots; i++) {
                 const spreadX = (Math.random() - 0.5) * weapon.spread;
                 const spreadY = (Math.random() - 0.5) * weapon.spread;
                 raycaster.setFromCamera(new THREE.Vector2(spreadX, spreadY), camera);
-                const intersects = raycaster.intersectObjects(enemies);
+                const intersects = raycaster.intersectObjects([...enemies, ...crates]);
                 if (intersects.length > 0) {
-                    const hitEnemy = intersects[0].object;
-                    hitEnemy.userData.health -= weapon.damage;
-                    spawnBlood(hitEnemy.position);
-                    if (hitEnemy.userData.health <= 0) {
-                        playSound('death');
-                        dismemberEnemy(hitEnemy);
-                        scene.remove(hitEnemy);
-                        const index = enemies.indexOf(hitEnemy);
-                        world.removeBody(enemyBodies[index]);
-                        enemies.splice(index, 1);
-                        enemyBodies.splice(index, 1);
-                        killCount++;
-                        if (Math.random() < 0.5) spawnEnemy(Math.random() < 0.7 ? 'fast' : 'tank');
+                    const hit = intersects[0].object;
+                    if (hit.userData.health) {
+                        const isHeadshot = weapon.name !== 'Chainsaw' && intersects[0].point.y > hit.position.y + (hit.userData.type === 'fast' ? 0.5 : hit.userData.type === 'tank' ? 1 : 0.7);
+                        const damage = isHeadshot && weapon.headshotMult ? weapon.damage * weapon.headshotMult : weapon.damage;
+                        hit.userData.health -= damage;
+                        spawnBlood(intersects[0].point);
+                        if (hit.userData.health <= 0) {
+                            if (enemies.includes(hit)) {
+                                playSound('death');
+                                dismemberEnemy(hit);
+                                scene.remove(hit);
+                                const index = enemies.indexOf(hit);
+                                world.removeBody(enemyBodies[index]);
+                                enemies.splice(index, 1);
+                                enemyBodies.splice(index, 1);
+                                killCount++;
+                                multiKill++;
+                                score += isHeadshot ? 200 : 100;
+                                if (Math.random() < 0.3) spawnEnemy(Math.random() < 0.5 ? 'fast' : Math.random() < 0.5 ? 'tank' : 'ranged');
+                            } else if (crates.includes(hit)) {
+                                scene.remove(hit);
+                                const index = crates.indexOf(hit);
+                                world.removeBody(crateBodies[index]);
+                                crates.splice(index, 1);
+                                crateBodies.splice(index, 1);
+                                spawnBlood(hit.position, true);
+                            }
+                        }
+                        hits++;
                     }
                 }
+                if (weapon.name === 'Rocket Launcher' && hits === 0) {
+                    const explosionPos = raycaster.ray.origin.clone().add(raycaster.ray.direction.multiplyScalar(10));
+                    enemies.forEach((enemy, i) => {
+                        if (enemy.position.distanceTo(explosionPos) < weapon.explosionRadius) {
+                            enemy.userData.health -= weapon.damage;
+                            spawnBlood(enemy.position);
+                            if (enemy.userData.health <= 0) {
+                                playSound('death');
+                                dismemberEnemy(enemy);
+                                scene.remove(enemy);
+                                const index = enemies.indexOf(enemy);
+                                world.removeBody(enemyBodies[index]);
+                                enemies.splice(index, 1);
+                                enemyBodies.splice(index, 1);
+                                killCount++;
+                                multiKill++;
+                                score += 100;
+                            }
+                        }
+                    });
+                    spawnBlood(explosionPos, true);
+                }
             }
+            if (hits > 1) score += multiKill * 50;
+            if (weapon.name === 'Chainsaw') {
+                const range = weapon.range;
+                enemies.forEach((enemy, i) => {
+                    if (enemy.position.distanceTo(camera.position) < range && enemy.userData.health > 0) {
+                        enemy.userData.health -= weapon.damage;
+                        spawnBlood(enemy.position);
+                        if (enemy.userData.health <= 0) {
+                            playSound('death');
+                            dismemberEnemy(enemy);
+                            scene.remove(enemy);
+                            const index = enemies.indexOf(enemy);
+                            world.removeBody(enemyBodies[index]);
+                            enemies.splice(index, 1);
+                            enemyBodies.splice(index, 1);
+                            killCount++;
+                            multiKill++;
+                            score += 150;
+                        }
+                    }
+                });
+            }
+            setTimeout(() => { multiKill = 0; }, 1000);
         }
+
+        // Leaderboard
+        let playerName = prompt('Enter your name for the leaderboard:', 'Player') || 'Player';
+        const leaderboard = JSON.parse(localStorage.getItem('bloodFuryLeaderboard') || '[]');
+        function updateLeaderboard() {
+            leaderboard.push({ name: playerName, score });
+            leaderboard.sort((a, b) => b.score - a.score);
+            if (leaderboard.length > 5) leaderboard.pop();
+            localStorage.setItem('bloodFuryLeaderboard', JSON.stringify(leaderboard));
+            document.getElementById('leaderboard').innerHTML = 'Leaderboard:<br>' + leaderboard.map((e, i) => `${i + 1}. ${e.name}: ${e.score}`).join('<br>');
+        }
+
+        // Wave system
+        setInterval(() => {
+            if (!gameOver) {
+                wave++;
+                for (let i = 0; i < 5 + wave; i++) {
+                    spawnEnemy(Math.random() < 0.4 ? 'fast' : Math.random() < 0.4 ? 'tank' : 'ranged');
+                }
+            }
+        }, 30000);
 
         // Animation loop
         let gameOver = false;
@@ -386,39 +597,64 @@
             if (moveRight) direction.x += 1;
             direction.normalize();
             direction.applyQuaternion(camera.quaternion);
-            velocity.x = direction.x * 5;
-            velocity.z = direction.z * 5;
+            const speed = sprint && stamina > 0 ? 8 : 5;
+            if (sprint && direction.length() > 0) {
+                stamina -= 0.5;
+                if (stamina < 0) stamina = 0;
+            } else {
+                stamina += 0.2;
+                if (stamina > 100) stamina = 100;
+            }
+            velocity.x = direction.x * speed;
+            velocity.z = direction.z * speed;
             playerBody.velocity.set(velocity.x, velocity.y, velocity.z);
             camera.position.copy(playerBody.position);
 
             // Update enemies
             enemies.forEach((enemy, i) => {
                 const directionToPlayer = playerBody.position.vsub(enemyBodies[i].position);
+                const distance = directionToPlayer.norm();
                 directionToPlayer.normalize();
                 const speed = enemy.userData.speed;
-                enemyBodies[i].velocity.set(directionToPlayer.x * speed, 0, directionToPlayer.z * speed);
+                if (enemy.userData.type !== 'ranged' || distance > 10) {
+                    enemyBodies[i].velocity.set(directionToPlayer.x * speed, 0, directionToPlayer.z * speed);
+                } else {
+                    enemyBodies[i].velocity.set(0, 0, 0);
+                    if (Date.now() - enemy.userData.lastShot > 2000) {
+                        spawnProjectile(enemy);
+                        enemy.userData.lastShot = Date.now();
+                    }
+                }
                 enemy.position.copy(enemyBodies[i].position);
-                // Check collision with player
-                const distance = enemy.position.distanceTo(camera.position);
-                if (distance < 1) {
+                if (distance < 1 && enemy.userData.type !== 'ranged') {
                     playerHealth -= 0.1;
+                    spawnBlood(playerBody.position);
                     if (playerHealth <= 0) {
                         gameOver = true;
                         document.getElementById('gameOver').style.display = 'block';
                         document.exitPointerLock();
+                        updateLeaderboard();
                     }
                 }
             });
 
             updateBlood();
+            updateProjectiles();
 
             // Update UI
             document.getElementById('ui').innerHTML = `
                 Health: ${Math.max(0, Math.floor(playerHealth))}<br>
-                Weapon: ${weapons[currentWeapon].name}<br>
-                Ammo: ${weapons[currentWeapon].ammo}<br>
-                Kills: ${killCount}
+                Stamina: ${Math.floor(stamina)}<br>
+                Weapon: ${weapons[currentWeapon].name}${isReloading ? ' (Reloading)' : ''}<br>
+                Ammo: ${weapons[currentWeapon].ammo}/${weapons[currentWeapon].maxAmmo}<br>
+                Kills: ${killCount}<br>
+                Score: ${score}<br>
+                Wave: ${wave}
             `;
+
+            // Unlock weapon skins
+            if (score > 1000) weapons.forEach(w => w.color = 0xffd700); // Gold skin
+            else if (score > 500) weapons.forEach(w => w.color = 0xaaaaaa); // Silver skin
 
             renderer.render(scene, camera);
         }
