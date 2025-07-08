@@ -1,18 +1,242 @@
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FPS Parkour Game</title>
-    <link rel="stylesheet" href="css/style.css">
+    <title>BloodFury FPS</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #crosshair { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            width: 20px; 
+            height: 20px; 
+            transform: translate(-50%, -50%); 
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 10px;
+            top: 5px;
+            left: 9px;
+        }
+        #crosshair::after {
+            width: 10px;
+            height: 2px;
+            top: 9px;
+            left: 5px;
+        }
+    </style>
 </head>
 <body>
-    <canvas id="gameCanvas"></canvas>
     <div id="crosshair"></div>
-    <div id="health">Health: 100</div>
-    <div id="score">Score: 0</div>
-    <script src="js/game.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+    <script>
+        // Initialize Three.js scene
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Initialize Cannon.js physics
+        const world = new CANNON.World();
+        world.gravity.set(0, -9.82, 0);
+
+        // Player setup
+        const playerBody = new CANNON.Body({ mass: 1 });
+        playerBody.addShape(new CANNON.Sphere(0.5));
+        playerBody.position.set(0, 1, 10);
+        world.addBody(playerBody);
+        camera.position.copy(playerBody.position);
+
+        // Camera controls
+        let yaw = 0, pitch = 0;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let canShoot = true;
+
+        // Lock pointer
+        document.addEventListener('click', () => {
+            renderer.domElement.requestPointerLock();
+        });
+
+        document.addEventListener('mousemove', (event) => {
+            if (document.pointerLockElement === renderer.domElement) {
+                const sensitivity = 0.002;
+                yaw -= event.movementX * sensitivity;
+                pitch -= event.movementY * sensitivity;
+                pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+                camera.rotation.set(pitch, yaw, 0);
+            }
+        });
+
+        // Keyboard controls
+        document.addEventListener('keydown', (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        });
+
+        // Shooting
+        document.addEventListener('mousedown', () => {
+            if (canShoot && document.pointerLockElement === renderer.domElement) {
+                shoot();
+                canShoot = false;
+                setTimeout(() => { canShoot = true; }, 500);
+            }
+        });
+
+        // Ground
+        const groundTexture = new THREE.TextureLoader().load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
+        const groundGeometry = new THREE.PlaneGeometry(100, 100);
+        const groundMaterial = new THREE.MeshBasicMaterial({ map: groundTexture });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        const groundBody = new CANNON.Body({ mass: 0 });
+        groundBody.addShape(new CANNON.Plane());
+        groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+        world.addBody(groundBody);
+
+        // Enemies
+        const enemies = [];
+        const enemyBodies = [];
+        for (let i = 0; i < 5; i++) {
+            const enemyGeometry = new THREE.BoxGeometry(1, 1, 1);
+            const enemyMaterial = new THREE.MeshBasicMaterial({ color: 0x8b0000 });
+            const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
+            enemy.position.set(Math.random() * 20 - 10, 0.5, Math.random() * 20 - 10);
+            scene.add(enemy);
+            enemies.push(enemy);
+
+            const enemyBody = new CANNON.Body({ mass: 1 });
+            enemyBody.addShape(new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 0.5)));
+            enemyBody.position.copy(enemy.position);
+            world.addBody(enemyBody);
+            enemyBodies.push(enemyBody);
+        }
+
+        // Blood particles
+        const bloodParticles = [];
+        const bloodGeometry = new THREE.BufferGeometry();
+        const bloodVertices = new Float32Array(3000);
+        bloodGeometry.setAttribute('position', new THREE.BufferAttribute(bloodVertices, 3));
+        const bloodMaterial = new THREE.PointsMaterial({ color: 0xff0000, size: 0.1 });
+        const bloodSystem = new THREE.Points(bloodGeometry, bloodMaterial);
+        scene.add(bloodSystem);
+
+        function spawnBlood(position) {
+            for (let i = 0; i < 100; i++) {
+                const particle = {
+                    position: new THREE.Vector3(position.x, position.y, position.z),
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 2,
+                        Math.random() * 2,
+                        (Math.random() - 0.5) * 2
+                    ),
+                    lifetime: 2
+                };
+                bloodParticles.push(particle);
+            }
+        }
+
+        function updateBlood() {
+            for (let i = bloodParticles.length - 1; i >= 0; i--) {
+                const particle = bloodParticles[i];
+                particle.position.add(particle.velocity.multiplyScalar(1 / 60));
+                particle.lifetime -= 1 / 60;
+                if (particle.lifetime <= 0) {
+                    bloodParticles.splice(i, 1);
+                }
+            }
+            const positions = bloodSystem.geometry.attributes.position.array;
+            for (let i = 0; i < bloodParticles.length; i++) {
+                positions[i * 3] = bloodParticles[i].position.x;
+                positions[i * 3 + 1] = bloodParticles[i].position.y;
+                positions[i * 3 + 2] = bloodParticles[i].position.z;
+            }
+            bloodSystem.geometry.attributes.position.needsUpdate = true;
+            bloodSystem.geometry.setDrawRange(0, bloodParticles.length);
+        }
+
+        function shoot() {
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(enemies);
+            if (intersects.length > 0) {
+                const hitEnemy = intersects[0].object;
+                spawnBlood(hitEnemy.position);
+                scene.remove(hitEnemy);
+                const index = enemies.indexOf(hitEnemy);
+                if (index > -1) {
+                    world.removeBody(enemyBodies[index]);
+                    enemies.splice(index, 1);
+                    enemyBodies.splice(index, 1);
+                }
+            }
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            world.step(1 / 60);
+
+            // Update player movement
+            velocity.set(0, playerBody.velocity.y, 0);
+            direction.set(0, 0, 0);
+            if (moveForward) direction.z -= 1;
+            if (moveBackward) direction.z += 1;
+            if (moveLeft) direction.x -= 1;
+            if (moveRight) direction.x += 1;
+            direction.normalize();
+            direction.applyQuaternion(camera.quaternion);
+            velocity.x = direction.x * 5;
+            velocity.z = direction.z * 5;
+            playerBody.velocity.set(velocity.x, velocity.y, velocity.z);
+            camera.position.copy(playerBody.position);
+
+            // Update enemies
+            enemies.forEach((enemy, i) => {
+                const directionToPlayer = playerBody.position.vsub(enemyBodies[i].position);
+                directionToPlayer.normalize();
+                enemyBodies[i].velocity.set(directionToPlayer.x, 0, directionToPlayer.z);
+                enemy.position.copy(enemyBodies[i].position);
+            });
+
+            updateBlood();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
 </body>
 </html>
-```
